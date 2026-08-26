@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aegisops-agent-sa
+  namespace: aegisops-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aegisops-agent-role
+rules:
+  # Read permissions for triage & root cause analysis
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "services", "endpoints", "events", "configmaps", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "deployments/status", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Controlled remediation write permissions
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["patch", "update"]
+  - apiGroups: ["aegisops.io"]
+    resources: ["investigationruns", "investigationruns/status", "remediationplans", "remediationplans/status", "slopolicies", "slopolicies/status"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aegisops-agent-binding
+subjects:
+  - kind: ServiceAccount
+    name: aegisops-agent-sa
+    namespace: aegisops-system
+roleRef:
+  kind: ClusterRole
+  name: aegisops-agent-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: aegisops-slo-burn-rate-rules
+  namespace: observability
+  labels:
+    role: alert-rules
+spec:
+  groups:
+    - name: payment-service-slo-burn
+      rules:
+        # 1-hour burn rate > 14.4 (consumes 2% of 30-day budget in 1 hour) -> Critical Page
+        - alert: PaymentServiceErrorBudgetFastBurn
+          expr: |
+            (
+              sum(rate(payment_requests_total{status="failure"}[1h]))
+              /
+              sum(rate(payment_requests_total[1h]))
+            ) > (14.4 * (1 - 0.999))
+          for: 2m
+          labels:
+            severity: critical
+            tier: payment
+            service: payment-service
+            aegisops_trigger: "true"
+          annotations:
+            summary: "High 1-hour error budget burn rate on payment-service"
+            description: "Payment service is burning 30-day error budget at 14.4x rate (current burn consumes 2% budget in 1 hour)."
+
+        # Memory leak detection alert before full OOMKill cascade
+        - alert: PaymentServiceMemoryLeakDetected
+          expr: |
+            deriv(container_memory_working_set_bytes{container="payment-service"}[5m]) > 1048576
+          for: 3m
+          labels:
+            severity: warning
+            service: payment-service
+            aegisops_trigger: "true"
+          annotations:
+            summary: "Memory leak trajectory detected on payment-service"
+            description: "Payment service memory consumption is increasing linearly at > 1MB/min."

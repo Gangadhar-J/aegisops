@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-service-code
+  namespace: production
+data:
+  main.py: |
+    import os
+    import time
+    import uuid
+    import logging
+    import httpx
+    from fastapi import FastAPI, HTTPException, Response
+    from pydantic import BaseModel
+    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
+    SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "order-service")
+    PAYMENT_SERVICE_URL = os.getenv("PAYMENT_SERVICE_URL", "http://payment-service:8000")
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logger = logging.getLogger(SERVICE_NAME)
+
+    ORDER_REQUESTS_TOTAL = Counter("order_requests_total", "Total orders processed", ["status"])
+    ORDER_LATENCY_SECONDS = Histogram("order_processing_latency_seconds", "Order processing latency", buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0])
+
+    app = FastAPI(title="Order Service", version="1.0.0")
+
+    class CreateOrderRequest(BaseModel):
+        customer_id: str
+        items: list
+        amount: float
+        currency: str = "USD"
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "service": SERVICE_NAME, "version": "1.0.0"}
+
+    @app.get("/metrics")
+    def metrics():
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @app.post("/orders")
+    async def create_order(order: CreateOrderRequest):
+        start_time = time.time()
+        order_id = f"ord_{uuid.uuid4().hex[:8]}"
+
+        logger.info(f"Initiating order {order_id} for customer {order.customer_id}")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                pay_resp = await client.post(
+                    f"{PAYMENT_SERVICE_URL}/process-payment",
+                    json={
+                        "order_id": order_id,
+                        "amount": order.amount,
+                        "currency": order.currency,
+                        "payment_method": "credit_card"
+                    }
+                )
+                if pay_resp.status_code != 200:
+                    ORDER_REQUESTS_TOTAL.labels(status="failure").inc()
+                    raise HTTPException(status_code=502, detail=f"Downstream payment failed: {pay_resp.text}")
+
+                payment_data = pay_resp.json()
+            except httpx.RequestError as exc:
+                ORDER_REQUESTS_TOTAL.labels(status="failure").inc()
+                raise HTTPException(status_code=504, detail=f"Payment service timeout: {str(exc)}")
+
+        ORDER_REQUESTS_TOTAL.labels(status="success").inc()
+        duration = time.time() - start_time
+        ORDER_LATENCY_SECONDS.observe(duration)
+
+        return {
+            "order_id": order_id,
+            "status": "CONFIRMED",
+            "payment": payment_data,
+            "processing_time_ms": round(duration * 1000, 2)
+        }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: production
+  labels:
+    app: order-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      volumes:
+        - name: app-code
+          configMap:
+            name: order-service-code
+      containers:
+        - name: order-service
+          image: python:3.11-slim
+          command:
+            - "sh"
+            - "-c"
+            - "pip install --no-cache-dir fastapi uvicorn prometheus-client pydantic httpx && cd /app && uvicorn main:app --host 0.0.0.0 --port 8000"
+          volumeMounts:
+            - name: app-code
+              mountPath: /app
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PAYMENT_SERVICE_URL
+              value: "http://payment-service:8000"
+            - name: OTEL_SERVICE_NAME
+              value: "order-service"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: production
+  labels:
+    app: order-service
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  selector:
+    app: order-service

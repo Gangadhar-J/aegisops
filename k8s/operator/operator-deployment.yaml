@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegisops-operator
+  namespace: aegisops-system
+  labels:
+    app: aegisops-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegisops-operator
+  template:
+    metadata:
+      labels:
+        app: aegisops-operator
+    spec:
+      serviceAccountName: aegisops-agent-sa
+      containers:
+        - name: operator
+          image: python:3.11-slim
+          command:
+            - "sh"
+            - "-c"
+            - "pip install --no-cache-dir kopf kubernetes pydantic httpx prometheus-client && python -m kopf run /app/operator/controllers/investigation_controller.py --verbose --all-namespaces"
+          env:
+            - name: ENV
+              value: "production"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegisops-idp-portal
+  namespace: aegisops-system
+  labels:
+    app: aegisops-idp-portal
+    app.kubernetes.io/component: portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegisops-idp-portal
+  template:
+    metadata:
+      labels:
+        app: aegisops-idp-portal
+    spec:
+      serviceAccountName: aegisops-agent-sa
+      containers:
+        - name: idp-portal
+          image: python:3.11-slim
+          command:
+            - "sh"
+            - "-c"
+            - "pip install --no-cache-dir fastapi uvicorn pydantic httpx prometheus-client kubernetes && python /app/apps/idp-portal/server.py"
+          ports:
+            - containerPort: 8005
+              name: http
+          env:
+            - name: ENV
+              value: "production"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegisops-idp-portal
+  namespace: aegisops-system
+  labels:
+    app: aegisops-idp-portal
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8005
+      targetPort: 8005
+      name: http
+  selector:
+    app: aegisops-idp-portal

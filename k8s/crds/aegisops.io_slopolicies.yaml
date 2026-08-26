@@ -1,0 +1,74 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: slopolicies.aegisops.io
+spec:
+  group: aegisops.io
+  names:
+    kind: SLOPolicy
+    listKind: SLOPolicyList
+    plural: slopolicies
+    singular: slopolicy
+    shortNames: ["slo"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["serviceName", "targetAvailability", "windowDays"]
+              properties:
+                serviceName:
+                  type: string
+                targetAvailability:
+                  type: number
+                  minimum: 90.0
+                  maximum: 100.0
+                windowDays:
+                  type: integer
+                  default: 30
+                sliMetrics:
+                  type: object
+                  properties:
+                    successPromQL:
+                      type: string
+                    totalPromQL:
+                      type: string
+                    latencyThresholdMs:
+                      type: number
+                alerting:
+                  type: object
+                  properties:
+                    oneHourBurnRateThreshold:
+                      type: number
+                      default: 14.4
+                    sixHourBurnRateThreshold:
+                      type: number
+                      default: 6.0
+                    autoTriggerInvestigation:
+                      type: boolean
+                      default: true
+            status:
+              type: object
+              properties:
+                currentAvailability:
+                  type: number
+                errorBudgetRemainingPercentage:
+                  type: number
+                burnRate1h:
+                  type: number
+                burnRate6h:
+                  type: number
+                healthStatus:
+                  type: string
+                  enum: ["HEALTHY", "WARNING", "CRITICAL_BURNING", "EXHAUSTED"]
+                lastCalculatedTime:
+                  type: string
+                  format: date-time
+      subresources:
+        status: {}

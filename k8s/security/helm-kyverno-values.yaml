@@ -1,0 +1,15 @@
+# Helm Values for Kyverno Policy Engine
+# Install with:
+# helm repo add kyverno https://kyverno.github.io/kyverno/
+# helm upgrade --install kyverno kyverno/kyverno -n kyverno --create-namespace -f k8s/security/helm-kyverno-values.yaml
+
+admissionController:
+  replicas: 1
+  serviceMonitor:
+    enabled: false
+backgroundController:
+  replicas: 1
+cleanupController:
+  replicas: 1
+reportsController:
+  replicas: 1

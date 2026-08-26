@@ -1,0 +1,36 @@
+# Helm Values for full Production Observability in namespace 'observability'
+# Install with: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+# helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n observability -f k8s/observability/helm-observability-values.yaml
+
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      receiver: 'aegisops-operator-webhook'
+    receivers:
+      - name: 'aegisops-operator-webhook'
+        webhook_configs:
+          - url: 'http://aegisops-idp-portal.aegisops-system.svc.cluster.local:8005/api/incidents/trigger'
+            send_resolved: true
+
+grafana:
+  enabled: true
+  adminPassword: "admin"

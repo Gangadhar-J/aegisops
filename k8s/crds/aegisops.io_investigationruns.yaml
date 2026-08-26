@@ -1,0 +1,68 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: investigationruns.aegisops.io
+spec:
+  group: aegisops.io
+  names:
+    kind: InvestigationRun
+    listKind: InvestigationRunList
+    plural: investigationruns
+    singular: investigationrun
+    shortNames: ["inv"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["incidentId", "triggerSource", "targetService"]
+              properties:
+                incidentId:
+                  type: string
+                triggerSource:
+                  type: string
+                  enum: ["ALERT_SLO_BURN", "ALERT_5XX_SPIKE", "ALERT_OOMKILL", "ALERT_FALCO_THREAT", "MANUAL_TRIGGER"]
+                targetService:
+                  type: string
+                targetNamespace:
+                  type: string
+                  default: "production"
+                triggerDetails:
+                  type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["INITIALIZING", "TRIAGING", "HYPOTHESIS_TESTING", "EVALUATING_SECURITY", "PLAN_FORMULATED", "WAITING_APPROVAL", "REMEDIATING", "COMPLETED", "FAILED"]
+                rootCauseSummary:
+                  type: string
+                confidenceScore:
+                  type: number
+                culpritCommitOrConfig:
+                  type: string
+                associatedRemediationPlan:
+                  type: string
+                postmortemUri:
+                  type: string
+                timeline:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      timestamp:
+                        type: string
+                      stage:
+                        type: string
+                      message:
+                        type: string
+                      evidence:
+                        type: string
+      subresources:
+        status: {}

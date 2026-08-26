@@ -1,0 +1,21 @@
+- rule: Terminal Shell Spawned in Production Pod
+  desc: Detects when an interactive shell is launched inside a production container
+  condition: >
+    spawned_process and container and
+    k8s.ns.name = "production" and
+    proc.name in (bash, sh, zsh, ksh)
+  output: >
+    CRITICAL: Shell spawned in pod (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name cmd=%proc.cmdline)
+  priority: CRITICAL
+  tags: [security, k8s, aegisops]
+
+- rule: Sensitive File Read in Production
+  desc: Detects unauthorized read of service account secrets or private keys
+  condition: >
+    open_read and container and
+    k8s.ns.name = "production" and
+    (fd.name startswith "/var/run/secrets/kubernetes.io/serviceaccount/token" or fd.name endswith ".pem" or fd.name endswith ".key")
+  output: >
+    WARNING: Sensitive credential file accessed (user=%user.name pod=%k8s.pod.name file=%fd.name)
+  priority: WARNING
+  tags: [security, compliance, aegisops]

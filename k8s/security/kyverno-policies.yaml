@@ -1,0 +1,50 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: aegisops-guardrail-policies
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-resource-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+              namespaces:
+                - production
+      validate:
+        message: "CPU and memory resource limits must be explicitly set on all containers."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - resources:
+                      limits:
+                        memory: "?*"
+                        cpu: "?*"
+                      requests:
+                        memory: "?*"
+                        cpu: "?*"
+
+    - name: disallow-root-and-privileged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+              namespaces:
+                - production
+      validate:
+        message: "Running as root user or privileged escalation is strictly forbidden."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - securityContext:
+                      allowPrivilegeEscalation: false

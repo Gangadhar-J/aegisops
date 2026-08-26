@@ -1,0 +1,109 @@
+"""
+AegisOps Practical Demonstration & End-to-End Incident Lifecycle Runner
+Simulates:
+1. Chaos Event (Memory Leak + DB Connection Starvation)
+2. SLO Error Budget Burn Rate Alert Trigger
+3. Autonomous Multi-Agent Swarm (TriageAgent -> SecurityAgent -> RemediationAgent)
+4. Model Context Protocol (MCP) Tool Invocations
+5. Human-in-the-Loop (HITL) Remediation Review & Approval
+6. GitOps / ArgoCD Automated Reconciliation
+7. Telemetry Recovery Verification
+8. Google SRE Standard Blameless Postmortem Generation
+"""
+import sys
+import time
+import asyncio
+from datetime import datetime
+
+sys.path.insert(0, "/Users/gangadharreddy/projects/ai-labs/aegisops")
+from agents.orchestrator import AegisOpsOrchestrator
+from agents.core.state import IncidentPhase
+
+
+async def run_practical_demo():
+    print("=" * 85)
+    print("🛡️  AEGIS-OPS: AUTONOMOUS SRE & PLATFORM CONTROL PLANE — LIVE DEMO")
+    print("=" * 85)
+    print(f"Timestamp: {datetime.utcnow().isoformat()}Z")
+    print("Environment: Kubernetes (Production Cluster) | Namespaces: production, aegisops-system")
+    print("Telemetry: OpenTelemetry Collector -> Prometheus, Grafana Loki, Tempo")
+    print("Agent Protocol: Model Context Protocol (k8s-mcp, otel-mcp, gitops-mcp)")
+    print("-" * 85)
+
+    # 1. Chaos Injection
+    print("\n[PHASE 1: CHAOS INJECTION & TELEMETRY ANOMALY]")
+    print("💥 Chaos Scenario Triggered: 'payment-service' rapid memory leak + DB connection starvation")
+    print("   -> Recent GitOps commit: 8f3b92c1 ('perf: lowered memory limits from 512Mi to 256Mi')")
+    print("   -> Telemetry Impact: Heap consumption reached 256Mi -> Linux kernel OOMKiller invoked (SIGKILL, exit 137)")
+    print("   -> Cascading Impact: p99 latency spiked to 3.45s; 14.2 req/sec failing with HTTP 500/504")
+
+    # 2. Prometheus SLO Alert
+    print("\n[PHASE 2: OBSERVABILITY & SRE ALERTING]")
+    print("🚨 Alertmanager Triggered: PaymentServiceErrorBudgetFastBurn")
+    print("   -> Metric: 1-hour burn rate = 16.8x (Critical Threshold: > 14.4x)")
+    print("   -> Error Budget Consumed: 2.35% of 30-day budget consumed in last 1 hour")
+    print("   -> Projected Time to Exhaustion: 18 hours 20 minutes")
+
+    # 3. Multi-Agent Swarm Wakeup & Investigation
+    print("\n[PHASE 3: AUTONOMOUS MULTI-AGENT TRIAGE VIA MCP]")
+    orchestrator = AegisOpsOrchestrator()
+    incident = await orchestrator.create_incident(
+        service_name="payment-service",
+        namespace="production",
+        trigger_alert="PaymentServiceErrorBudgetFastBurn"
+    )
+    print(f"🤖 Operator spawned InvestigationRun CR: {incident.incident_id}")
+    
+    incident = await orchestrator.run_investigation(incident)
+
+    print("\n   --- MCP Tool Interactions ---")
+    for ev in incident.evidence:
+        print(f"   ✓ [{ev.source}] ({ev.evidence_type}): {ev.summary}")
+
+    print(f"\n🎯 Root Cause Deduced: {incident.selected_root_cause.statement}")
+    print(f"   Diagnostic Confidence: {int(incident.selected_root_cause.confidence * 100)}%")
+    print(f"   Culprit Artifact: {incident.selected_root_cause.culprit_artifact}")
+
+    # 4. Security & Guardrail Audit
+    print("\n[PHASE 4: SECURITY GUARDRAILS & BLAST-RADIUS EVALUATION]")
+    print(f"🔒 Security Policy Audit: {'PASSED (Compliant)' if incident.security_audit.is_compliant else 'FAILED'}")
+    print(f"   Risk Score: {incident.security_audit.risk_score}/10")
+    print(f"   Blast Radius: {incident.security_audit.blast_radius}")
+    print(f"   Human-In-The-Loop (HITL) Gate: Required = {incident.security_audit.requires_human_approval}")
+
+    # 5. Remediation Formulation & GitOps PR
+    print("\n[PHASE 5: REMEDIATION PLANNING & GITOPS INTEGRATION]")
+    print(f"📦 Action Type: {incident.remediation_plan.action_type}")
+    print(f"🔗 Opened GitOps PR: {incident.remediation_plan.gitops_pr_url}")
+    print(f"🔄 Rollback Command Staged: {incident.remediation_plan.rollback_command}")
+    print(f"⏳ Current State: {incident.phase.value} (Waiting for SRE Approval in IDP Portal)")
+
+    # 6. Human-In-The-Loop Approval
+    print("\n[PHASE 6: HUMAN-IN-THE-LOOP (HITL) APPROVAL]")
+    print("👤 SRE Operator (gangadhar.sre) reviewing proposed changes in IDP Dashboard...")
+    time.sleep(1.0)
+    print("✔ SRE Operator clicked [APPROVE & RECONCILE VIA GITOPS]")
+    
+    incident = await orchestrator.approve_and_resolve(incident, approver="gangadhar.sre")
+
+    # 7. Verification
+    print("\n[PHASE 7: AUTOMATED ARGO-CD SYNC & RECOVERY VERIFICATION]")
+    print("🚀 ArgoCD application 'payment-service' synchronized.")
+    print("📊 Telemetry Verification (Post-Remediation):")
+    print("   -> 1-hour error budget burn rate returned to: 0.2x (GREEN)")
+    print("   -> Active OOMKilled containers: 0")
+    print("   -> p99 Latency: 48 ms")
+    print("   -> Availability: 99.98%")
+
+    # 8. Blameless Postmortem
+    print("\n" + "=" * 85)
+    print("📑 PHASE 8: AUTOMATED BLAMELESS POSTMORTEM GENERATED BY SCRIBE AGENT")
+    print("=" * 85 + "\n")
+    print(incident.postmortem_markdown)
+    print("=" * 85)
+    print("✨ PRACTICAL DEMO COMPLETED SUCCESSFULLY!")
+    print("=" * 85)
+
+
+if __name__ == "__main__":
+    asyncio.run(run_practical_demo())
