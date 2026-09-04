@@ -7,13 +7,35 @@ from agents.core.state import SecurityAudit, ActionType
 
 
 PROHIBITED_COMMAND_PATTERNS = [
+    # Filesystem destruction
     r"rm\s+-rf\s+/",
+    r"rm\s+-rf\s+\*",
+    r"mkfs\.",
+    r"dd\s+if=/dev",
+    # Database destruction
     r"drop\s+database",
     r"drop\s+table",
+    r"truncate\s+table",
+    # Kubernetes destructive cluster operations
     r"kubectl\s+delete\s+namespace",
     r"kubectl\s+delete\s+node",
+    r"kubectl\s+delete\s+pod\s+--all",
+    r"kubectl\s+scale\s+.*--replicas=0",
+    r"kubectl\s+exec",
+    r"kubectl\s+edit\s+clusterrole",
+    # Privilege escalation
     r"--privileged",
-    r"chmod\s+777"
+    r"chmod\s+777",
+    r"chmod\s+a\+s",
+    r"chown\s+root",
+    r"sudo\s+",
+    # Remote code execution via shell pipe
+    r"curl\s+.*\|\s*(bash|sh|zsh|python)",
+    r"wget\s+.*\|\s*(bash|sh|zsh|python)",
+    r"base64\s+-d\s+.*\|\s*(bash|sh)",
+    # Kubernetes API key/secret exfiltration
+    r"kubectl\s+get\s+secret.*-o",
+    r"/var/run/secrets",
 ]
 
 
