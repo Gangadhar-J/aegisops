@@ -6,7 +6,7 @@ Production hardening applied:
 - File-persisted incident store (JSON) with asyncio.Lock for concurrent safety
 - API key authentication via X-AegisOps-Token header (set AEGISOPS_API_KEY env var)
 - Live SLO data sourced from otel-mcp (with simulated fallback in dev)
-- Relative path import (no hardcoded /Users/... paths)
+- Relative path import (no hardcoded absolute machine paths)
 """
 import os
 import sys

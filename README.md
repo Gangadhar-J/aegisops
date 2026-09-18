@@ -156,7 +156,7 @@ In a Kubernetes deployment, LLMs do not execute direct network requests to inter
 
 #### Step 1: Bootstrap the Local Cluster & Demo Pods
 ```bash
-cd /Users/gangadharreddy/projects/ai-labs/aegisops
+cd aegisops
 ./scripts/setup_cluster.sh
 
 # Verify pods are 1/1 Running in 'production'
@@ -178,13 +178,13 @@ Open a separate terminal tab:
   kubectl port-forward svc/payment-service 8000:8000 -n production
 
   # 2. Inject memory leak until Linux kernel OOMKill (SIGKILL exit 137)
-  /Users/gangadharreddy/projects/ai-labs/.venv/bin/python chaos/trigger_oomkill.py
+  python chaos/trigger_oomkill.py
   ```
   *Watch the pod restart (`kubectl get pods -n production`) and see the alert pop up on [http://localhost:8005](http://localhost:8005).*
 
 * **Scenario B: Falco Runtime Security Anomaly**:
   ```bash
-  /Users/gangadharreddy/projects/ai-labs/.venv/bin/python chaos/trigger_security_anomaly.py
+  python chaos/trigger_security_anomaly.py
   ```
   *See the `FalcoRuntimeThreatDetected` security incident appear with a non-root hardening patch on [http://localhost:8005](http://localhost:8005).*
 
@@ -287,7 +287,7 @@ helm upgrade --install kyverno kyverno/kyverno \
 kubectl apply -f k8s/security/kyverno-policies.yaml
 ```
 
-#### Policies Enforced by AegisOps ([`kyverno-policies.yaml`](file:///Users/gangadharreddy/projects/ai-labs/aegisops/k8s/security/kyverno-policies.yaml)):
+#### Policies Enforced by AegisOps ([`kyverno-policies.yaml`](k8s/security/kyverno-policies.yaml)):
 1. **`require-resource-limits`**: Rejects any deployment in `production` that lacks explicit CPU and memory requests/limits (preventing unconstrained memory leaks).
 2. **`disallow-root-and-privileged`**: Blocks containers attempting to run as root (`UID 0`) or requesting `allowPrivilegeEscalation: true`.
 
@@ -315,7 +315,7 @@ helm upgrade --install falco falcosecurity/falco \
   -f k8s/security/helm-falco-values.yaml
 ```
 
-#### Falco Rules Active in AegisOps ([`falco-rules.yaml`](file:///Users/gangadharreddy/projects/ai-labs/aegisops/k8s/security/falco-rules.yaml)):
+#### Falco Rules Active in AegisOps ([`falco-rules.yaml`](k8s/security/falco-rules.yaml)):
 1. **Terminal Shell Spawned in Production Pod**:
    - **Trigger**: Process `bash`, `sh`, `zsh` spawned inside `production` namespace.
    - **Severity**: `CRITICAL`
@@ -333,12 +333,12 @@ FalcoSidekick is configured to automatically dispatch any `CRITICAL` or `WARNING
 ### A. Live Cloud Model Execution (Gemini API)
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key"
-PYTHONPATH=. /Users/gangadharreddy/projects/ai-labs/.venv/bin/python agents/llm_agent_loop.py
+PYTHONPATH=. python agents/llm_agent_loop.py
 ```
 
 ### B. Standalone Deterministic Execution (Zero API Keys Needed)
 ```bash
-PYTHONPATH=. /Users/gangadharreddy/projects/ai-labs/.venv/bin/python agents/orchestrator.py
+PYTHONPATH=. python agents/orchestrator.py
 ```
 
 ---
@@ -347,7 +347,7 @@ PYTHONPATH=. /Users/gangadharreddy/projects/ai-labs/.venv/bin/python agents/orch
 
 Run the full unit and integration test suite:
 ```bash
-PYTHONPATH=. /Users/gangadharreddy/projects/ai-labs/.venv/bin/python -m pytest agents/tests/ -v
+PYTHONPATH=. python -m pytest agents/tests/ -v
 ```
 
 ```text

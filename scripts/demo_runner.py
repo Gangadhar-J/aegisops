@@ -10,12 +10,13 @@ Simulates:
 7. Telemetry Recovery Verification
 8. Google SRE Standard Blameless Postmortem Generation
 """
+import os
 import sys
 import time
 import asyncio
 from datetime import datetime
 
-sys.path.insert(0, "/Users/gangadharreddy/projects/ai-labs/aegisops")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from agents.orchestrator import AegisOpsOrchestrator
 from agents.core.state import IncidentPhase
 
