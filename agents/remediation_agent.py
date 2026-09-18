@@ -2,10 +2,11 @@
 Remediation & GitOps Agent
 Generates safe, rollback-capable patches, opens GitOps pull requests, and orchestrates remediation execution.
 """
+import asyncio
 import logging
 from typing import Dict, Any
 from agents.core.state import IncidentState, IncidentPhase, ActionType, RemediationPlan
-from agents.core.mcp_client import MCPToolClient
+from agents.core.mcp_client import MCPToolClient, MCPToolCallError
 
 logger = logging.getLogger("aegisops-remediation-agent")
 
@@ -72,13 +73,24 @@ class RemediationAgent:
             pr_title = f"fix(hotfix): restore 512Mi memory limits & 50 db connections for {state.service_name}"
             pr_branch = f"hotfix/{state.incident_id}-memory-and-pool-tune"
 
-        pr_data = self.mcp.call_tool("gitops-mcp", "create_remediation_pr", {
-            "repo": "gitops-repo",
-            "branch": pr_branch,
-            "title": pr_title,
-            "file_path": f"k8s/demo-apps/{state.service_name}.yaml",
-            "patch_content": str(patch_spec)
-        })
+        try:
+            pr_data = await asyncio.to_thread(
+                self.mcp.call_tool,
+                "gitops-mcp",
+                "create_remediation_pr",
+                {
+                    "repo": "gitops-repo",
+                    "branch": pr_branch,
+                    "title": pr_title,
+                    "file_path": f"k8s/demo-apps/{state.service_name}.yaml",
+                    "patch_content": str(patch_spec)
+                }
+            )
+        except MCPToolCallError as e:
+            logger.error(f"Failed to create GitOps PR for {state.incident_id}: {e}")
+            state.phase = IncidentPhase.FAILED
+            state.add_timeline("RemediationAgent", "PR_CREATION_FAILED", f"GitOps PR creation failed: {e}")
+            return state
 
         rollback_command = f"kubectl rollout undo deployment/{state.service_name} -n {state.namespace}"
 
@@ -108,10 +120,21 @@ class RemediationAgent:
         state.phase = IncidentPhase.REMEDIATING
         state.add_timeline("RemediationAgent", "EXECUTION_STARTED", f"Triggering ArgoCD sync for application '{state.service_name}'")
 
-        sync_result = self.mcp.call_tool("gitops-mcp", "trigger_argocd_sync", {
-            "app_name": state.service_name,
-            "prune": True
-        })
+        try:
+            sync_result = await asyncio.to_thread(
+                self.mcp.call_tool,
+                "gitops-mcp",
+                "trigger_argocd_sync",
+                {
+                    "app_name": state.service_name,
+                    "prune": True
+                }
+            )
+        except MCPToolCallError as e:
+            logger.error(f"ArgoCD sync failed for {state.incident_id}: {e}")
+            state.phase = IncidentPhase.FAILED
+            state.add_timeline("RemediationAgent", "SYNC_FAILED", f"ArgoCD reconciliation failed: {e}")
+            return state
 
         state.add_timeline(
             "RemediationAgent",

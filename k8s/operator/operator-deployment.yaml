@@ -19,14 +19,14 @@ spec:
       serviceAccountName: aegisops-agent-sa
       containers:
         - name: operator
-          image: python:3.11-slim
-          command:
-            - "sh"
-            - "-c"
-            - "pip install --no-cache-dir kopf kubernetes pydantic httpx prometheus-client && python -m kopf run /app/operator/controllers/investigation_controller.py --verbose --all-namespaces"
+          # Replace with your registry image after: docker build -f Dockerfile.operator -t <registry>/aegisops-operator:latest .
+          image: aegisops-operator:latest
+          imagePullPolicy: IfNotPresent
           env:
-            - name: ENV
+            - name: AEGISOPS_ENV
               value: "production"
+            - name: PYTHONPATH
+              value: "/app"
           resources:
             requests:
               memory: "256Mi"
@@ -34,6 +34,14 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "1000m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -56,11 +64,9 @@ spec:
       serviceAccountName: aegisops-agent-sa
       containers:
         - name: idp-portal
-          image: python:3.11-slim
-          command:
-            - "sh"
-            - "-c"
-            - "pip install --no-cache-dir fastapi uvicorn pydantic httpx prometheus-client kubernetes && python /app/apps/idp-portal/server.py"
+          # Replace with your registry image after: docker build -f Dockerfile.portal -t <registry>/aegisops-portal:latest .
+          image: aegisops-portal:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8005
               name: http
@@ -79,8 +85,21 @@ spec:
             periodSeconds: 30
             failureThreshold: 3
           env:
-            - name: ENV
+            - name: AEGISOPS_ENV
               value: "production"
+            - name: AEGISOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aegisops-secrets
+                  key: api-key
+                  optional: true
+            - name: AEGISOPS_DATA_DIR
+              value: "/data/aegisops"
+            - name: PYTHONPATH
+              value: "/app"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data/aegisops
           resources:
             requests:
               memory: "256Mi"
@@ -88,6 +107,16 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data-volume
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

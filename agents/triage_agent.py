@@ -4,6 +4,7 @@ Correlates SLO burn-rate alerts, OpenTelemetry metrics/logs/traces, K8s cluster 
 Hypotheses are derived from actual evidence returned by MCP tools, not from hardcoded strings.
 """
 import uuid
+import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from agents.core.state import IncidentState, IncidentPhase, EvidenceItem, Hypothesis
@@ -27,12 +28,20 @@ class TriageAgent:
     def __init__(self, mcp_client: MCPToolClient = None):
         self.mcp = mcp_client or MCPToolClient()
 
-    def _safe_call(self, server: str, tool: str, args: dict) -> Optional[Dict[str, Any]]:
-        """Calls an MCP tool and returns result or None on failure (logs the error)."""
+    async def _safe_call(self, server: str, tool: str, args: dict, state: Optional[IncidentState] = None) -> Optional[Dict[str, Any]]:
+        """Calls an MCP tool asynchronously and returns result or None on failure (recording degraded evidence)."""
         try:
-            return self.mcp.call_tool(server, tool, args)
+            return await asyncio.to_thread(self.mcp.call_tool, server, tool, args)
         except MCPToolCallError as e:
             logger.warning(f"MCP tool call failed during triage: {e}. Investigation continues with partial evidence.")
+            if state:
+                state.evidence.append(EvidenceItem(
+                    source=f"mcp-error:{server}/{tool}",
+                    evidence_type="TOOL_ERROR",
+                    summary=f"Tool call [{server}] {tool}() failed: {e.cause}. Telemetry degraded.",
+                    details={"server": server, "tool": tool, "error": str(e)}
+                ))
+                state.add_timeline("TriageAgent", "TOOL_CALL_DEGRADED", f"Tool [{server}] {tool}() failed: {e.cause}")
             return None
 
     async def investigate(self, state: IncidentState) -> IncidentState:
@@ -96,7 +105,7 @@ class TriageAgent:
         culprit_commit = None
 
         # 1. SLO burn rate
-        slo_data = self._safe_call("otel-mcp", "query_slo_burn_rate", {"service_name": state.service_name})
+        slo_data = await self._safe_call("otel-mcp", "query_slo_burn_rate", {"service_name": state.service_name}, state=state)
         if slo_data:
             state.evidence.append(EvidenceItem(
                 source="otel-mcp",
@@ -108,7 +117,7 @@ class TriageAgent:
                                f"Confirmed critical error budget burn ({slo_data.get('burn_rate_1h')}x burn rate)")
 
         # 2. Pod health — detect OOMKilled containers
-        pods_data = self._safe_call("k8s-mcp", "get_pods", {"namespace": state.namespace})
+        pods_data = await self._safe_call("k8s-mcp", "get_pods", {"namespace": state.namespace}, state=state)
         if pods_data:
             for p in pods_data.get("pods", []):
                 for c in p.get("containers", []):
@@ -125,8 +134,8 @@ class TriageAgent:
                                    f"Identified container crash loops: OOMKilled pods {oom_pods}")
 
                 # Fetch previous logs of first OOMKilled pod
-                crashed_logs = self._safe_call("k8s-mcp", "get_pod_logs",
-                                               {"pod_name": oom_pods[0], "namespace": state.namespace, "previous": True})
+                crashed_logs = await self._safe_call("k8s-mcp", "get_pod_logs",
+                                                     {"pod_name": oom_pods[0], "namespace": state.namespace, "previous": True}, state=state)
                 if crashed_logs:
                     state.evidence.append(EvidenceItem(
                         source="k8s-mcp",
@@ -136,7 +145,7 @@ class TriageAgent:
                     ))
 
         # 3. Distributed trace waterfall
-        trace_data = self._safe_call("otel-mcp", "get_trace_tree", {"trace_id": "a1b2c3d4e5f60718"})
+        trace_data = await self._safe_call("otel-mcp", "get_trace_tree", {"trace_id": "a1b2c3d4e5f60718"}, state=state)
         if trace_data:
             slowest_span_ms = max((s.get("duration_ms", 0) for s in trace_data.get("spans", [])), default=0)
             db_spans = [s for s in trace_data.get("spans", []) if "db" in s.get("operation", "").lower()]
@@ -151,7 +160,7 @@ class TriageAgent:
                                f"Correlated distributed trace waterfall: db_starvation={db_starvation}, max_latency={slowest_span_ms}ms")
 
         # 4. GitOps commit history correlation
-        commit_history = self._safe_call("gitops-mcp", "get_git_commit_history", {"service": state.service_name})
+        commit_history = await self._safe_call("gitops-mcp", "get_git_commit_history", {"service": state.service_name}, state=state)
         if commit_history:
             recent_commits = commit_history.get("recent_commits", [])
             if recent_commits:

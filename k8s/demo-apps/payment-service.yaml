@@ -7,14 +7,17 @@ data:
   main.py: |
     import os
     import time
+    import asyncio
     import random
     import logging
-    from typing import List
-    from fastapi import FastAPI, HTTPException, Response
+    from typing import List, Optional
+    from fastapi import FastAPI, HTTPException, Response, Query, Header, Depends
     from pydantic import BaseModel
     from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
     SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "payment-service")
+    CHAOS_SECRET = os.getenv("CHAOS_SECRET", "")
+    CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "true").lower() == "true"
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logger = logging.getLogger(SERVICE_NAME)
@@ -25,6 +28,12 @@ data:
     DB_CONNECTIONS_ACTIVE = Gauge("db_connection_pool_active", "Active simulated database connections")
 
     app = FastAPI(title="Payment Service", version="1.0.0")
+
+    def _verify_chaos_auth(x_chaos_secret: Optional[str] = Header(None)):
+        if not CHAOS_ENABLED:
+            raise HTTPException(status_code=403, detail="Chaos injection is disabled")
+        if CHAOS_SECRET and x_chaos_secret != CHAOS_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid X-Chaos-Secret")
 
     LEAKED_BUFFERS: List[bytearray] = []
     CHAOS_STATE = {
@@ -68,11 +77,11 @@ data:
 
         if CHAOS_STATE["latency_spike_active"] or CHAOS_STATE["db_pool_starvation"]:
             DB_CONNECTIONS_ACTIVE.set(100.0)
-            time.sleep(CHAOS_STATE["latency_duration_sec"])
+            await asyncio.sleep(CHAOS_STATE["latency_duration_sec"])
             logger.warning(f"Database connection pool starvation: waited {CHAOS_STATE['latency_duration_sec']}s for connection")
         else:
             DB_CONNECTIONS_ACTIVE.set(random.uniform(5.0, 25.0))
-            time.sleep(random.uniform(0.02, 0.08))
+            await asyncio.sleep(random.uniform(0.02, 0.08))
 
         PAYMENT_REQUESTS_TOTAL.labels(status="success", currency=req.currency).inc()
         duration = time.time() - start_time
@@ -85,28 +94,31 @@ data:
             "duration_ms": round(duration * 1000, 2)
         }
 
-    @app.post("/chaos/leak-memory")
-    def chaos_leak_memory(mb_to_leak: int = 50):
-        bytes_count = mb_to_leak * 1024 * 1024
-        chunk = bytearray(b"X" * bytes_count)
-        LEAKED_BUFFERS.append(chunk)
-        total_leaked = sum(len(b) for b in LEAKED_BUFFERS)
-        MEMORY_LEAK_GAUGE.set(total_leaked)
-        logger.warning(f"CHAOS: Injected memory leak of {mb_to_leak} MB. Total leaked: {total_leaked / (1024*1024):.1f} MB")
-        return {
-            "status": "memory_leak_injected",
-            "leaked_mb_this_call": mb_to_leak,
-            "total_leaked_mb": total_leaked / (1024 * 1024)
-        }
+    @app.post("/chaos/leak-memory", dependencies=[Depends(_verify_chaos_auth)])
+    def chaos_leak_memory(mb_to_leak: int = Query(default=50, ge=1, le=256)):
+        try:
+            bytes_count = mb_to_leak * 1024 * 1024
+            chunk = bytearray(b"X" * bytes_count)
+            LEAKED_BUFFERS.append(chunk)
+            total_leaked = sum(len(b) for b in LEAKED_BUFFERS)
+            MEMORY_LEAK_GAUGE.set(total_leaked)
+            logger.warning(f"CHAOS: Injected memory leak of {mb_to_leak} MB. Total leaked: {total_leaked / (1024*1024):.1f} MB")
+            return {
+                "status": "memory_leak_injected",
+                "leaked_mb_this_call": mb_to_leak,
+                "total_leaked_mb": total_leaked / (1024 * 1024)
+            }
+        except MemoryError:
+            raise HTTPException(status_code=507, detail="Insufficient memory for requested chunk")
 
-    @app.post("/chaos/reset-memory")
+    @app.post("/chaos/reset-memory", dependencies=[Depends(_verify_chaos_auth)])
     def chaos_reset_memory():
         LEAKED_BUFFERS.clear()
         MEMORY_LEAK_GAUGE.set(0)
         logger.info("CHAOS: Memory leak buffers cleared.")
         return {"status": "memory_reset"}
 
-    @app.post("/chaos/configure")
+    @app.post("/chaos/configure", dependencies=[Depends(_verify_chaos_auth)])
     def chaos_configure(config: ChaosConfigRequest):
         CHAOS_STATE["latency_spike_active"] = config.latency_spike
         CHAOS_STATE["latency_duration_sec"] = config.latency_sec
@@ -153,6 +165,20 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
           env:
             - name: ENV
               value: "production"

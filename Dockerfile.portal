@@ -1,0 +1,30 @@
+# AegisOps IDP Portal
+FROM python:3.11-slim AS builder
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.11-slim
+WORKDIR /app
+
+# Create non-root user
+RUN groupadd -r aegisops && useradd -r -g aegisops -d /app -s /sbin/nologin aegisops
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY agents/ /app/agents/
+COPY mcp_servers/ /app/mcp_servers/
+COPY mcp-servers/ /app/mcp-servers/
+COPY apps/ /app/apps/
+COPY fastmcp_compat.py /app/
+COPY aegisops_logging.py /app/
+
+# Create data directory owned by non-root user
+RUN mkdir -p /tmp/aegisops-data && chown aegisops:aegisops /tmp/aegisops-data
+
+EXPOSE 8005
+USER aegisops
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import httpx; httpx.get('http://localhost:8005/health').raise_for_status()"
+ENTRYPOINT ["python", "/app/apps/idp-portal/server.py"]

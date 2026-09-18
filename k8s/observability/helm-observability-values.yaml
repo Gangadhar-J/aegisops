@@ -33,4 +33,10 @@ alertmanager:
 
 grafana:
   enabled: true
-  adminPassword: "admin"
+  # Production security: Avoid plaintext passwords in version control.
+  # Create secret via:
+  # kubectl create secret generic grafana-admin-credentials --from-literal=admin-user=admin --from-literal=admin-password=<SECURE_PASSWORD> -n observability
+  admin:
+    existingSecret: "grafana-admin-credentials"
+    userKey: "admin-user"
+    passwordKey: "admin-password"

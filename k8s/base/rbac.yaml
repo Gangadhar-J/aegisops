@@ -4,22 +4,20 @@ metadata:
   name: aegisops-agent-sa
   namespace: aegisops-system
 ---
+# Cluster-wide Read-Only permissions for incident triage & CRD management
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: aegisops-agent-role
+  name: aegisops-agent-reader-role
 rules:
-  # Read permissions for triage & root cause analysis
+  # Read permissions for triage & root cause analysis across workloads
   - apiGroups: [""]
     resources: ["pods", "pods/log", "pods/status", "services", "endpoints", "events", "configmaps", "namespaces"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale", "deployments/status", "replicasets", "statefulsets"]
     verbs: ["get", "list", "watch"]
-  # Controlled remediation write permissions
-  - apiGroups: ["apps"]
-    resources: ["deployments", "deployments/scale"]
-    verbs: ["patch", "update"]
+  # AegisOps Custom Resource management across namespaces
   - apiGroups: ["aegisops.io"]
     resources: ["investigationruns", "investigationruns/status", "remediationplans", "remediationplans/status", "slopolicies", "slopolicies/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -27,12 +25,37 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: aegisops-agent-binding
+  name: aegisops-agent-reader-binding
 subjects:
   - kind: ServiceAccount
     name: aegisops-agent-sa
     namespace: aegisops-system
 roleRef:
   kind: ClusterRole
-  name: aegisops-agent-role
+  name: aegisops-agent-reader-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Least-Privilege: Remediation write permissions strictly scoped to application namespace ('production')
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aegisops-remediation-role
+  namespace: production
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aegisops-remediation-binding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: aegisops-agent-sa
+    namespace: aegisops-system
+roleRef:
+  kind: Role
+  name: aegisops-remediation-role
   apiGroup: rbac.authorization.k8s.io

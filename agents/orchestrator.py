@@ -43,47 +43,74 @@ class AegisOpsOrchestrator:
 
     async def run_investigation(self, state: IncidentState) -> IncidentState:
         """Runs Triage -> Remediation Formulation -> Security Audit."""
-        # 1. Triage & RCA
-        state = await self.triage_agent.investigate(state)
+        try:
+            # 1. Triage & RCA
+            state = await self.triage_agent.investigate(state)
 
-        # 2. Formulate Remediation Plan
-        state = await self.remediation_agent.formulate_plan(state)
+            # 2. Formulate Remediation Plan
+            state = await self.remediation_agent.formulate_plan(state)
 
-        # 3. Security & Policy Guardrail Audit
-        if state.remediation_plan:
-            state = await self.security_agent.audit_plan(
-                state=state,
-                action_type=state.remediation_plan.action_type,
-                proposed_patch=state.remediation_plan.proposed_patch
-            )
+            # 3. Security & Policy Guardrail Audit
+            if state.remediation_plan:
+                state = await self.security_agent.audit_plan(
+                    state=state,
+                    action_type=state.remediation_plan.action_type,
+                    proposed_patch=state.remediation_plan.proposed_patch
+                )
 
-        state.phase = IncidentPhase.WAITING_APPROVAL
-        state.add_timeline(
-            "Orchestrator",
-            "AWAITING_APPROVAL",
-            "Investigation complete. Remediation plan submitted to IDP / Slack approval gate."
-        )
-        return state
+            # Gate: Only proceed to approval if the security audit passed
+            if state.security_audit and not state.security_audit.is_compliant:
+                state.phase = IncidentPhase.FAILED
+                state.add_timeline(
+                    "Orchestrator",
+                    "SECURITY_AUDIT_FAILED",
+                    f"Remediation plan REJECTED by security audit. Violations: {state.security_audit.policy_violations}. Manual intervention required."
+                )
+                logger.warning(f"Incident {state.incident_id}: Security audit failed — plan blocked from approval.")
+            else:
+                state.phase = IncidentPhase.WAITING_APPROVAL
+                state.add_timeline(
+                    "Orchestrator",
+                    "AWAITING_APPROVAL",
+                    "Investigation complete. Remediation plan submitted to IDP / Slack approval gate."
+                )
+            return state
+        except Exception as e:
+            logger.error(f"Investigation failed for {state.incident_id}: {e}")
+            state.phase = IncidentPhase.FAILED
+            state.add_timeline("Orchestrator", "INVESTIGATION_ERROR", f"Investigation aborted due to error: {e}")
+            return state
 
     async def approve_and_resolve(self, state: IncidentState, approver: str = "sr-sre-lead") -> IncidentState:
         """Executes remediation upon approval and compiles postmortem."""
         if not state.remediation_plan:
             raise ValueError("No remediation plan found to approve.")
 
-        state.remediation_plan.approval_status = "APPROVED"
-        state.add_timeline("Orchestrator", "HITL_APPROVED", f"Remediation plan approved by user '{approver}'.")
+        if state.security_audit and not state.security_audit.is_compliant:
+            raise ValueError(
+                f"Cannot approve: security audit failed with violations: {state.security_audit.policy_violations}"
+            )
 
-        # 1. Execute Remediation
-        state = await self.remediation_agent.execute_remediation(state)
+        try:
+            state.remediation_plan.approval_status = "APPROVED"
+            state.add_timeline("Orchestrator", "HITL_APPROVED", f"Remediation plan approved by user '{approver}'.")
 
-        # 2. Verify Recovery
-        state.phase = IncidentPhase.VERIFYING
-        state.add_timeline("Orchestrator", "VERIFICATION", "Verifying service telemetry recovery: SLO burn rate returned to normal (0.2x).")
+            # 1. Execute Remediation
+            state = await self.remediation_agent.execute_remediation(state)
 
-        # 3. Generate Blameless Postmortem
-        state = await self.scribe_agent.generate_postmortem(state)
+            # 2. Verify Recovery
+            state.phase = IncidentPhase.VERIFYING
+            state.add_timeline("Orchestrator", "VERIFICATION", "Verifying service telemetry recovery: SLO burn rate returned to normal (0.2x).")
 
-        return state
+            # 3. Generate Blameless Postmortem
+            state = await self.scribe_agent.generate_postmortem(state)
+
+            return state
+        except Exception as e:
+            logger.error(f"Remediation failed for {state.incident_id}: {e}")
+            state.phase = IncidentPhase.FAILED
+            state.add_timeline("Orchestrator", "REMEDIATION_ERROR", f"Remediation execution failed: {e}")
+            return state
 
 
 # Standalone runner for testing or CLI demo

@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import asyncio
+import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -19,6 +20,8 @@ from fastapi import FastAPI, HTTPException, Request, Security, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+
+logger = logging.getLogger("aegisops-idp-portal")
 
 # Portable relative path — works on any machine and in containers
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -44,13 +47,17 @@ def _load_incidents() -> Dict[str, Any]:
     if INCIDENTS_FILE.exists():
         try:
             return json.loads(INCIDENTS_FILE.read_text())
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to parse incidents store {INCIDENTS_FILE}: {e}")
             return {}
     return {}
 
 
 def _save_incidents(db: Dict[str, Any]) -> None:
-    INCIDENTS_FILE.write_text(json.dumps(db, indent=2, default=str))
+    # Atomic file write: write to temp file then replace
+    tmp_file = INCIDENTS_FILE.with_suffix(".tmp")
+    tmp_file.write_text(json.dumps(db, indent=2, default=str))
+    os.replace(tmp_file, INCIDENTS_FILE)
 
 
 async def get_incidents_db() -> Dict[str, Any]:
@@ -175,7 +182,8 @@ async def get_slos():
                 "open_incidents": open_incidents_count if svc["name"] == "payment-service" else 0,
                 "data_source": slo_data.get("data_source", "unknown")
             })
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to query SLO metrics for {svc['name']}: {e}")
             # Hard fallback if MCP is unavailable
             result.append({
                 "service": svc["name"],
@@ -244,6 +252,12 @@ async def approve_remediation(incident_id: str, approval: ApprovalRequest):
     resolved_incident = await orchestrator.approve_and_resolve(incident, approver=approval.approver)
     await write_incident(incident_id, resolved_incident)
     return json.loads(resolved_incident.model_dump_json())
+
+
+@app.get("/api/auth-config")
+async def auth_config():
+    """Public endpoint for frontend to discover auth requirements."""
+    return {"auth_required": bool(AEGISOPS_API_KEY), "env": AEGISOPS_ENV}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -368,6 +382,21 @@ def index_portal():
     <script>
         let currentIncidentId = null;
 
+        let apiToken = '';
+
+        // Prompt for API token if auth is required
+        fetch('/api/auth-config').then(r => r.json()).then(cfg => {
+            if (cfg.auth_required) {
+                apiToken = prompt('Enter your AegisOps API Token (X-AegisOps-Token):') || '';
+            }
+        }).catch(() => {});
+
+        function authHeaders(extra = {}) {
+            const h = { ...extra };
+            if (apiToken) h['X-AegisOps-Token'] = apiToken;
+            return h;
+        }
+
         // Check health endpoint to display env badge
         fetch('/health').then(r => r.json()).then(h => {
             const badge = document.getElementById('env-badge');
@@ -379,7 +408,7 @@ def index_portal():
 
         async function loadSLOs() {
             try {
-                const res = await fetch('/api/slos');
+                const res = await fetch('/api/slos', { headers: authHeaders() });
                 if (!res.ok) return;
                 const slos = await res.json();
                 const container = document.getElementById('slo-container');
@@ -427,7 +456,7 @@ def index_portal():
 
         async function loadIncidents() {
             try {
-                const res = await fetch('/api/incidents');
+                const res = await fetch('/api/incidents', { headers: authHeaders() });
                 if (!res.ok) return;
                 const incidents = await res.json();
                 const container = document.getElementById('incident-container');
@@ -505,7 +534,7 @@ def index_portal():
             try {
                 const res = await fetch('/api/incidents/trigger', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ scenario: scenario, service: 'payment-service' })
                 });
                 if (!res.ok) {
@@ -520,7 +549,7 @@ def index_portal():
 
         async function openApprovalModal(incidentId) {
             currentIncidentId = incidentId;
-            const res = await fetch(`/api/incidents/${incidentId}`);
+            const res = await fetch(`/api/incidents/${incidentId}`, { headers: authHeaders() });
             const inc = await res.json();
             document.getElementById('modal-patch-code').innerText = JSON.stringify(inc.remediation_plan?.proposed_patch || {}, null, 2);
             document.getElementById('modal-rollback-cmd').innerText = inc.remediation_plan?.rollback_command || 'N/A';
@@ -542,7 +571,7 @@ def index_portal():
             try {
                 const res = await fetch(`/api/incidents/${currentIncidentId}/approve`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ approver: approver, comment: 'Approved via IDP Portal' })
                 });
                 if (!res.ok) { const err = await res.json(); alert(`Approval failed: ${err.detail}`); return; }
@@ -553,7 +582,7 @@ def index_portal():
         }
 
         async function viewPostmortem(incidentId) {
-            const res = await fetch(`/api/incidents/${incidentId}`);
+            const res = await fetch(`/api/incidents/${incidentId}`, { headers: authHeaders() });
             const inc = await res.json();
             document.getElementById('postmortem-content').innerText = inc.postmortem_markdown || 'Postmortem not yet generated.';
             document.getElementById('postmortem-modal').classList.remove('hidden');
@@ -565,7 +594,7 @@ def index_portal():
         let pollInterval = 8000;
         async function smartPoll() {
             await loadSLOs();
-            const res = await fetch('/api/incidents').then(r => r.json()).catch(() => []);
+            const res = await fetch('/api/incidents', { headers: authHeaders() }).then(r => r.json()).catch(() => []);
             const hasActive = Array.isArray(res) && res.some(i => i.phase === 'WAITING_APPROVAL' || i.phase === 'TRIAGING');
             pollInterval = hasActive ? 4000 : 8000;
             setTimeout(smartPoll, pollInterval);

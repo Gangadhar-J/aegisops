@@ -1,0 +1,25 @@
+# AegisOps Kopf Operator
+FROM python:3.11-slim AS builder
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.11-slim
+WORKDIR /app
+
+# Create non-root user
+RUN groupadd -r aegisops && useradd -r -g aegisops -d /app -s /sbin/nologin aegisops
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY agents/ /app/agents/
+COPY mcp_servers/ /app/mcp_servers/
+COPY mcp-servers/ /app/mcp-servers/
+COPY operator/ /app/operator/
+COPY fastmcp_compat.py /app/
+COPY aegisops_logging.py /app/
+
+USER aegisops
+ENTRYPOINT ["python", "-m", "kopf", "run", "/app/operator/controllers/investigation_controller.py", "--verbose", "--all-namespaces"]

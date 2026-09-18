@@ -1,35 +1,53 @@
 import os
 import time
+import asyncio
 import random
 import logging
-from typing import Dict, Any, List
-from fastapi import FastAPI, HTTPException, Request, Response
+from typing import Dict, Any, List, Optional
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Header, Query
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
-# OpenTelemetry Imports
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+# OpenTelemetry Imports (graceful fallback if not installed)
+try:
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    OTEL_AVAILABLE = True
+except ImportError:
+    OTEL_AVAILABLE = False
 
-# Initialize OpenTelemetry
 SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "payment-service")
 OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability.svc.cluster.local:4317")
 
-resource = Resource.create({"service.name": SERVICE_NAME, "service.version": "1.0.0", "environment": os.getenv("ENV", "production")})
-provider = TracerProvider(resource=resource)
+if OTEL_AVAILABLE:
+    resource = Resource.create({"service.name": SERVICE_NAME, "service.version": "1.0.0", "environment": os.getenv("ENV", "production")})
+    provider = TracerProvider(resource=resource)
+    try:
+        otlp_exporter = OTLPSpanExporter(endpoint=OTEL_EXPORTER_ENDPOINT, insecure=True)
+        provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+    except Exception:
+        provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+    trace.set_tracer_provider(provider)
+    tracer = trace.get_tracer(__name__)
+else:
+    provider = None
+    from contextlib import nullcontext
 
-try:
-    otlp_exporter = OTLPSpanExporter(endpoint=OTEL_EXPORTER_ENDPOINT, insecure=True)
-    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-except Exception as e:
-    provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+    class _DummySpan:
+        def set_attribute(self, *args, **kwargs): pass
+        def record_exception(self, *args, **kwargs): pass
+        def is_recording(self): return False
+        def get_span_context(self): return None
 
-trace.set_tracer_provider(provider)
-tracer = trace.get_tracer(__name__)
+    class _DummyTracer:
+        def start_as_current_span(self, *args, **kwargs):
+            return nullcontext(_DummySpan())
+
+    tracer = _DummyTracer()
 
 # Structured Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [trace_id=%(otelTraceID)s] %(message)s")
@@ -37,10 +55,13 @@ logger = logging.getLogger(SERVICE_NAME)
 
 class TraceFilter(logging.Filter):
     def filter(self, record):
-        span = trace.get_current_span()
-        if span.is_recording():
-            ctx = span.get_span_context()
-            record.otelTraceID = format(ctx.trace_id, "032x")
+        if OTEL_AVAILABLE:
+            span = trace.get_current_span()
+            if span.is_recording():
+                ctx = span.get_span_context()
+                record.otelTraceID = format(ctx.trace_id, "032x")
+            else:
+                record.otelTraceID = "00000000000000000000000000000000"
         else:
             record.otelTraceID = "00000000000000000000000000000000"
         return True
@@ -54,7 +75,8 @@ MEMORY_LEAK_GAUGE = Gauge("service_memory_leak_bytes", "Bytes held in simulated 
 DB_CONNECTIONS_ACTIVE = Gauge("db_connection_pool_active", "Active simulated database connections")
 
 app = FastAPI(title="Payment Service", version="1.0.0")
-FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+if OTEL_AVAILABLE and provider:
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
 
 # In-memory leak storage for chaos simulation
 LEAKED_BUFFERS: List[bytearray] = []
@@ -66,11 +88,24 @@ CHAOS_STATE = {
     "db_pool_starvation": False
 }
 
+CHAOS_SECRET = os.getenv("CHAOS_SECRET", "")
+CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "true").lower() == "true"
+
+
+def _verify_chaos_auth(x_chaos_secret: Optional[str] = Header(None)):
+    """Guards chaos injection endpoints against unauthorized triggers."""
+    if not CHAOS_ENABLED:
+        raise HTTPException(status_code=403, detail="Chaos injection is disabled in this environment")
+    if CHAOS_SECRET and x_chaos_secret != CHAOS_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Chaos-Secret header")
+
+
 class PaymentRequest(BaseModel):
     order_id: str
     amount: float
     currency: str = "USD"
     payment_method: str = "credit_card"
+
 
 class ChaosConfigRequest(BaseModel):
     latency_spike: bool = False
@@ -79,13 +114,16 @@ class ChaosConfigRequest(BaseModel):
     error_rate: float = 0.8
     db_starvation: bool = False
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": SERVICE_NAME, "version": "1.0.0"}
 
+
 @app.get("/metrics")
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.post("/process-payment")
 async def process_payment(req: PaymentRequest):
@@ -110,12 +148,12 @@ async def process_payment(req: PaymentRequest):
             with tracer.start_as_current_span("db_acquire_connection") as db_span:
                 db_span.set_attribute("db.system", "postgresql")
                 db_span.set_attribute("db.pool.status", "exhausted")
-                DB_CONNECTIONS_ACTIVE.set(100.0) # max capacity
-                time.sleep(CHAOS_STATE["latency_duration_sec"])
+                DB_CONNECTIONS_ACTIVE.set(100.0)  # max capacity
+                await asyncio.sleep(CHAOS_STATE["latency_duration_sec"])
                 logger.warning(f"Database connection pool starvation: waited {CHAOS_STATE['latency_duration_sec']}s for connection")
         else:
             DB_CONNECTIONS_ACTIVE.set(random.uniform(5.0, 25.0))
-            time.sleep(random.uniform(0.02, 0.08)) # normal fast processing
+            await asyncio.sleep(random.uniform(0.02, 0.08))  # normal fast processing
 
         PAYMENT_REQUESTS_TOTAL.labels(status="success", currency=req.currency).inc()
         duration = time.time() - start_time
@@ -128,28 +166,35 @@ async def process_payment(req: PaymentRequest):
             "duration_ms": round(duration * 1000, 2)
         }
 
-@app.post("/chaos/leak-memory")
-def chaos_leak_memory(mb_to_leak: int = 50):
-    bytes_count = mb_to_leak * 1024 * 1024
-    chunk = bytearray(b"X" * bytes_count)
-    LEAKED_BUFFERS.append(chunk)
-    total_leaked = sum(len(b) for b in LEAKED_BUFFERS)
-    MEMORY_LEAK_GAUGE.set(total_leaked)
-    logger.warning(f"CHAOS: Injected memory leak of {mb_to_leak} MB. Total leaked: {total_leaked / (1024*1024):.1f} MB")
-    return {
-        "status": "memory_leak_injected",
-        "leaked_mb_this_call": mb_to_leak,
-        "total_leaked_mb": total_leaked / (1024 * 1024)
-    }
 
-@app.post("/chaos/reset-memory")
+@app.post("/chaos/leak-memory", dependencies=[Depends(_verify_chaos_auth)])
+def chaos_leak_memory(mb_to_leak: int = Query(default=50, ge=1, le=256)):
+    try:
+        bytes_count = mb_to_leak * 1024 * 1024
+        chunk = bytearray(b"X" * bytes_count)
+        LEAKED_BUFFERS.append(chunk)
+        total_leaked = sum(len(b) for b in LEAKED_BUFFERS)
+        MEMORY_LEAK_GAUGE.set(total_leaked)
+        logger.warning(f"CHAOS: Injected memory leak of {mb_to_leak} MB. Total leaked: {total_leaked / (1024*1024):.1f} MB")
+        return {
+            "status": "memory_leak_injected",
+            "leaked_mb_this_call": mb_to_leak,
+            "total_leaked_mb": total_leaked / (1024 * 1024)
+        }
+    except MemoryError:
+        logger.error("CHAOS: MemoryError encountered while allocating memory chunk")
+        raise HTTPException(status_code=507, detail="Insufficient storage/memory to allocate requested chunk")
+
+
+@app.post("/chaos/reset-memory", dependencies=[Depends(_verify_chaos_auth)])
 def chaos_reset_memory():
     LEAKED_BUFFERS.clear()
     MEMORY_LEAK_GAUGE.set(0)
     logger.info("CHAOS: Memory leak buffers cleared.")
     return {"status": "memory_reset"}
 
-@app.post("/chaos/configure")
+
+@app.post("/chaos/configure", dependencies=[Depends(_verify_chaos_auth)])
 def chaos_configure(config: ChaosConfigRequest):
     CHAOS_STATE["latency_spike_active"] = config.latency_spike
     CHAOS_STATE["latency_duration_sec"] = config.latency_sec

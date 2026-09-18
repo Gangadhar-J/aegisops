@@ -10,7 +10,8 @@ import logging
 import kopf
 from datetime import datetime
 
-sys.path.insert(0, "/Users/gangadharreddy/projects/ai-labs/aegisops")
+# Portable relative path resolution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from agents.orchestrator import AegisOpsOrchestrator
 from agents.core.state import IncidentState, IncidentPhase
 

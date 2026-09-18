@@ -53,16 +53,42 @@ class GuardrailEngine:
         risk_score = 3  # baseline
 
         # 1. Namespace Isolation Check
-        if target_namespace in ["kube-system", "kube-public", "aegisops-system"]:
+        if target_namespace in ["kube-system", "kube-public", "kube-node-lease", "aegisops-system"]:
             violations.append(f"Direct automated modifications to control plane namespace '{target_namespace}' are forbidden.")
             risk_score += 4
 
-        # 2. Check for Privileged Escalation / Root User in Patches
-        patch_str = str(patch_spec).lower()
-        if "privileged" in patch_str and "true" in patch_str:
+        # 2. Check for Privileged Escalation / Root User in Patches via Structured Inspection
+        def _check_privilege(obj: Any) -> Tuple[bool, bool]:
+            """Recursively traverses dict/list looking for privileged or allowPrivilegeEscalation."""
+            has_privileged = False
+            has_escalation = False
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    k_lower = str(k).lower()
+                    # Check for privileged
+                    if k_lower == "privileged":
+                        if v is True or (isinstance(v, str) and v.lower() == "true") or v == 1:
+                            has_privileged = True
+                    # Check for allowPrivilegeEscalation
+                    elif k_lower == "allowprivilegeescalation":
+                        if v is True or (isinstance(v, str) and v.lower() == "true") or v == 1:
+                            has_escalation = True
+                    # Recurse into nested structures
+                    p, e = _check_privilege(v)
+                    has_privileged = has_privileged or p
+                    has_escalation = has_escalation or e
+            elif isinstance(obj, list):
+                for item in obj:
+                    p, e = _check_privilege(item)
+                    has_privileged = has_privileged or p
+                    has_escalation = has_escalation or e
+            return has_privileged, has_escalation
+
+        found_privileged, found_escalation = _check_privilege(patch_spec)
+        if found_privileged:
             violations.append("Policy Violation: Container privileged mode cannot be enabled during remediation.")
             risk_score += 5
-        if "allowprivilegeescalation" in patch_str and "true" in patch_str:
+        if found_escalation:
             violations.append("Policy Violation: Privilege escalation is disallowed under Kyverno baseline policy.")
             risk_score += 4
 

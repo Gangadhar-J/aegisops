@@ -1,15 +1,55 @@
-# Helm Values for Kyverno Policy Engine
+# Helm Values for Kyverno Policy Engine (High Availability Production Setup)
 # Install with:
 # helm repo add kyverno https://kyverno.github.io/kyverno/
 # helm upgrade --install kyverno kyverno/kyverno -n kyverno --create-namespace -f k8s/security/helm-kyverno-values.yaml
 
 admissionController:
-  replicas: 1
+  replicas: 3
+  podDisruptionBudget:
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: "kubernetes.io/hostname"
+      whenUnsatisfiable: "ScheduleAnyway"
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: admission-controller
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
   serviceMonitor:
-    enabled: false
+    enabled: true
+
 backgroundController:
-  replicas: 1
+  replicas: 2
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
 cleanupController:
-  replicas: 1
+  replicas: 2
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
 reportsController:
-  replicas: 1
+  replicas: 2
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi

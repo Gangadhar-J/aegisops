@@ -14,6 +14,8 @@ from fastmcp_compat import FastMCP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("k8s-mcp-server")
 
+AEGISOPS_ENV = os.getenv("AEGISOPS_ENV", "dev")
+
 mcp = FastMCP("k8s-mcp", dependencies=["kubernetes", "pydantic"])
 
 K8S_AVAILABLE = False
@@ -67,12 +69,15 @@ def get_pods(namespace: str = "production") -> str:
                     "node_name": pod.spec.node_name,
                     "containers": container_statuses
                 })
-            return json.dumps({"namespace": namespace, "pods": result}, indent=2)
+            return json.dumps({"namespace": namespace, "pods": result, "data_source": "kubernetes_live"}, indent=2)
         except Exception as e:
             logger.error(f"Error querying k8s pods: {e}")
+            if AEGISOPS_ENV == "production":
+                return json.dumps({"status": "error", "error": f"Kubernetes API unavailable: {e}", "data_source": "error"}, indent=2)
 
     # High-fidelity simulated response for testing and offline execution
     return json.dumps({
+        "data_source": "simulated_dev",
         "namespace": namespace,
         "pods": [
             {
@@ -142,24 +147,26 @@ def get_pod_logs(pod_name: str, namespace: str = "production", tail_lines: int =
             return logs
         except Exception as e:
             logger.error(f"Error fetching pod logs: {e}")
+            if AEGISOPS_ENV == "production":
+                return json.dumps({"status": "error", "error": f"Kubernetes API unavailable: {e}", "data_source": "error"}, indent=2)
 
     # Simulated log stream
     if "payment" in pod_name:
         if previous:
-            return (
+            return "[SIMULATED DATA - dev mode]\n" + (
                 "2026-08-26 19:10:02 [INFO] [trace_id=a1b2c3d4e5f60718] Processing payment for Order: ord_8f11ac, Amount: 149.99 USD\n"
                 "2026-08-26 19:10:05 [WARNING] [trace_id=a1b2c3d4e5f60718] CHAOS: Injected memory leak of 50 MB. Total leaked: 245.0 MB\n"
                 "2026-08-26 19:10:08 [WARNING] [trace_id=b2c3d4e5f6071829] Service memory usage exceeds 95% of limit (256Mi)\n"
                 "2026-08-26 19:10:09 [CRITICAL] [trace_id=b2c3d4e5f6071829] Out of Memory: Kill process 1 (uvicorn) score 987 or sacrifice child\n"
                 "Killed"
             )
-        return (
+        return "[SIMULATED DATA - dev mode]\n" + (
             "2026-08-26 19:11:15 [INFO] [trace_id=c3d4e5f607182930] Uvicorn running on http://0.0.0.0:8000 (PID 1)\n"
             "2026-08-26 19:11:18 [INFO] [trace_id=c3d4e5f607182930] Processing payment for Order: ord_99ab21, Amount: 49.00 USD\n"
             "2026-08-26 19:11:22 [WARNING] [trace_id=c3d4e5f607182930] Database connection pool starvation: waited 2.5s for connection\n"
             "2026-08-26 19:11:24 [ERROR] [trace_id=d4e5f60718293041] Downstream Payment Gateway Connection Timed Out (500 Internal Server Error)"
         )
-    return f"Logs for {pod_name} ({namespace}): Service healthy. No errors reported."
+    return f"[SIMULATED DATA - dev mode]\nLogs for {pod_name} ({namespace}): Service healthy. No errors reported."
 
 
 @mcp.tool()
@@ -181,11 +188,14 @@ def get_cluster_events(namespace: str = "production", limit: int = 25) -> str:
                     "count": ev.count,
                     "last_timestamp": str(ev.last_timestamp)
                 })
-            return json.dumps({"events": result}, indent=2)
+            return json.dumps({"events": result, "data_source": "kubernetes_live"}, indent=2)
         except Exception as e:
             logger.error(f"Error fetching cluster events: {e}")
+            if AEGISOPS_ENV == "production":
+                return json.dumps({"status": "error", "error": f"Kubernetes API unavailable: {e}", "data_source": "error"}, indent=2)
 
     return json.dumps({
+        "data_source": "simulated_dev",
         "events": [
             {
                 "type": "Warning",
@@ -215,6 +225,23 @@ def get_cluster_events(namespace: str = "production", limit: int = 25) -> str:
     }, indent=2)
 
 
+def _sanitize_env_vars(env_list) -> List[Dict[str, str]]:
+    """Redacts sensitive values (passwords, tokens, secrets) from container env variables."""
+    sensitive_keywords = {"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "PRIVATE", "APIKEY", "API_KEY"}
+    sanitized = []
+    for e in (env_list or []):
+        name = getattr(e, "name", "") if hasattr(e, "name") else (e.get("name", "") if isinstance(e, dict) else "")
+        raw_val = getattr(e, "value", "") if hasattr(e, "value") else (e.get("value", "") if isinstance(e, dict) else "")
+        has_secret_ref = getattr(e, "value_from", None) or (isinstance(e, dict) and e.get("value_from"))
+        
+        name_upper = str(name).upper()
+        if any(kw in name_upper for kw in sensitive_keywords) or has_secret_ref:
+            sanitized.append({name: "[REDACTED_SECRET]"})
+        else:
+            sanitized.append({name: str(raw_val) if raw_val is not None else ""})
+    return sanitized
+
+
 @mcp.tool()
 def get_deployment_spec(deployment_name: str, namespace: str = "production") -> str:
     """
@@ -224,23 +251,28 @@ def get_deployment_spec(deployment_name: str, namespace: str = "production") -> 
         try:
             apps_v1 = client.AppsV1Api()
             dep = apps_v1.read_namespaced_deployment(name=deployment_name, namespace=namespace)
-            c = dep.spec.template.spec.containers[0]
+            containers = dep.spec.template.spec.containers if dep.spec and dep.spec.template and dep.spec.template.spec else []
+            c = containers[0] if containers else None
             return json.dumps({
+                "data_source": "kubernetes_live",
                 "name": dep.metadata.name,
                 "namespace": dep.metadata.namespace,
                 "replicas": dep.spec.replicas,
-                "image": c.image,
+                "image": c.image if c else "unknown",
                 "resources": {
-                    "limits": c.resources.limits if c.resources else None,
-                    "requests": c.resources.requests if c.resources else None
+                    "limits": c.resources.limits if c and c.resources else None,
+                    "requests": c.resources.requests if c and c.resources else None
                 },
-                "env": [{e.name: e.value} for e in (c.env or [])],
+                "env": _sanitize_env_vars(c.env if c else []),
                 "labels": dep.metadata.labels
             }, indent=2)
         except Exception as e:
             logger.error(f"Error fetching deployment: {e}")
+            if AEGISOPS_ENV == "production":
+                return json.dumps({"status": "error", "error": f"Kubernetes API unavailable: {e}", "data_source": "error"}, indent=2)
 
     return json.dumps({
+        "data_source": "simulated_dev",
         "name": deployment_name,
         "namespace": namespace,
         "replicas": 2,

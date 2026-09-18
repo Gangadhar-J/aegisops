@@ -25,7 +25,13 @@ kubectl apply -f k8s/crds/
 echo "3. Applying RBAC ServiceAccounts and ClusterRoles..."
 kubectl apply -f k8s/base/rbac.yaml
 
-echo "4. Deploying Demo Microservices Suite (payment-service, order-service)..."
+echo "4. Applying Zero-Trust Network Policies..."
+kubectl apply -f k8s/base/network-policies.yaml
+
+echo "5. Applying Autoscaling (HPA) and Availability (PDB) Policies..."
+kubectl apply -f k8s/base/hpa-pdb.yaml
+
+echo "6. Deploying Demo Microservices Suite (payment-service, order-service)..."
 kubectl apply -f k8s/demo-apps/
 
 echo "5. Verifying deployed resources in namespace 'production'..."

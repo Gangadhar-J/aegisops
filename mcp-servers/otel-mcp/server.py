@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import time
+import re
+import urllib.parse
 import logging
 from typing import Dict, Any, List, Optional
 import httpx
@@ -71,6 +73,7 @@ def query_promql(query: str, time_range_minutes: int = 30) -> str:
     if "payment_requests_total" in query and "failure" in query:
         return json.dumps({
             "status": "success",
+            "data_source": "simulated_dev",
             "data": {
                 "resultType": "vector",
                 "result": [{"metric": {"service": "payment-service", "status": "failure"}, "value": [int(time.time()), "14.2"]}]
@@ -79,6 +82,7 @@ def query_promql(query: str, time_range_minutes: int = 30) -> str:
     elif "memory" in query or "working_set" in query:
         return json.dumps({
             "status": "success",
+            "data_source": "simulated_dev",
             "data": {
                 "resultType": "vector",
                 "result": [{"metric": {"container": "payment-service"}, "value": [int(time.time()), "268435456"]}]
@@ -87,6 +91,7 @@ def query_promql(query: str, time_range_minutes: int = 30) -> str:
     elif "latency" in query:
         return json.dumps({
             "status": "success",
+            "data_source": "simulated_dev",
             "data": {
                 "resultType": "vector",
                 "result": [{"metric": {"service": "payment-service", "quantile": "0.99"}, "value": [int(time.time()), "3.45"]}]
@@ -94,6 +99,7 @@ def query_promql(query: str, time_range_minutes: int = 30) -> str:
         }, indent=2)
     return json.dumps({
         "status": "success",
+        "data_source": "simulated_dev",
         "data": {"resultType": "vector", "result": [{"metric": {"query": query}, "value": [int(time.time()), "1.0"]}]}
     }, indent=2)
 
@@ -104,6 +110,10 @@ def query_slo_burn_rate(service_name: str, window: str = "1h") -> str:
     Calculates the multi-window error budget burn rate and remaining 30-day budget for a service.
     In production, queries Prometheus recording rules. In dev, returns high-fidelity simulated data.
     """
+    # Sanitize service_name against PromQL injection
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", service_name):
+        return json.dumps({"status": "error", "error": f"Invalid service_name '{service_name}': must match ^[a-zA-Z0-9_\\-]+$"}, indent=2)
+
     if AEGISOPS_ENV == "production":
         prom_query = f'aegisops:slo_burn_rate:1h{{service="{service_name}"}}'
         result = _http_get_with_retry(
@@ -171,6 +181,7 @@ def query_loki_logs(logql_query: str, limit: int = 25) -> str:
 
     return json.dumps({
         "status": "success",
+        "data_source": "simulated_dev",
         "data": {
             "resultType": "streams",
             "result": [{
@@ -193,7 +204,12 @@ def get_trace_tree(trace_id: str) -> str:
     """
     Retrieve distributed trace spans waterfall from Grafana Tempo / OpenTelemetry Collector.
     """
-    result = _http_get_with_retry(f"{TEMPO_URL}/api/traces/{trace_id}")
+    # Sanitize trace_id to prevent URL path traversal
+    safe_trace_id = urllib.parse.quote(trace_id, safe="")
+    if not safe_trace_id or ".." in trace_id:
+        return json.dumps({"status": "error", "error": f"Invalid trace_id: '{trace_id}'"}, indent=2)
+
+    result = _http_get_with_retry(f"{TEMPO_URL}/api/traces/{safe_trace_id}")
     if result is not None:
         return json.dumps(result, indent=2)
 

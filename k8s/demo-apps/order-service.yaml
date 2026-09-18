@@ -111,6 +111,20 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
           env:
             - name: PAYMENT_SERVICE_URL
               value: "http://payment-service:8000"

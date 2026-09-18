@@ -40,7 +40,7 @@ spec:
               namespaces:
                 - production
       validate:
-        message: "Running as root user or privileged escalation is strictly forbidden."
+        message: "Containers must run as non-root, disallow privilege escalation, and drop all Linux capabilities."
         pattern:
           spec:
             template:
@@ -48,3 +48,26 @@ spec:
                 containers:
                   - securityContext:
                       allowPrivilegeEscalation: false
+                      runAsNonRoot: true
+                      capabilities:
+                        drop:
+                          - ALL
+
+    - name: enforce-readonly-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+              namespaces:
+                - production
+      validate:
+        message: "Containers in production must use a read-only root filesystem to prevent runtime tampering."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - securityContext:
+                      readOnlyRootFilesystem: true

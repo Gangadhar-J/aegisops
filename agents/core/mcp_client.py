@@ -3,11 +3,13 @@ Unified MCP Client and Tool Dispatcher for AegisOps AI Agents
 Interfaces with k8s-mcp, otel-mcp, and gitops-mcp servers.
 Raises MCPToolCallError on failure so agents can handle it explicitly.
 """
+import os
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import httpx
 
-# Import underlying server tool functions
+# Import underlying server tool functions for in-process mode
 from mcp_servers.k8s_mcp.server import (
     get_pods,
     get_pod_logs,
@@ -29,6 +31,14 @@ from mcp_servers.gitops_mcp.server import (
 
 logger = logging.getLogger("aegisops-mcp-client")
 
+# Remote MCP Server Endpoints (for standalone container/Kubernetes deployments)
+REMOTE_MCP_ENDPOINTS = {
+    "k8s-mcp": os.getenv("K8S_MCP_URL", ""),
+    "otel-mcp": os.getenv("OTEL_MCP_URL", ""),
+    "gitops-mcp": os.getenv("GITOPS_MCP_URL", ""),
+}
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "inprocess")  # "inprocess" | "http"
+
 
 class MCPToolCallError(RuntimeError):
     """Raised when an MCP tool call fails, so agents can react explicitly."""
@@ -40,17 +50,22 @@ class MCPToolCallError(RuntimeError):
 
 
 class MCPToolClient:
-    """Provides a clean API for agents to call MCP server tools."""
+    """Provides a clean API for agents to call MCP server tools via in-process or HTTP transport."""
 
     @staticmethod
     def call_tool(server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatch a tool call to the appropriate MCP server.
         
+        Supports both in-process dispatch and remote HTTP transport.
         Raises:
             MCPToolCallError: If the tool execution fails. Agents MUST catch this
                               and handle accordingly (retry, fallback, or fail the incident).
         """
         logger.info(f"MCP Call -> [{server_name}] {tool_name}({arguments})")
+
+        remote_url = REMOTE_MCP_ENDPOINTS.get(server_name)
+        if MCP_TRANSPORT == "http" and remote_url:
+            return MCPToolClient._dispatch_remote(remote_url, server_name, tool_name, arguments)
 
         try:
             raw = MCPToolClient._dispatch(server_name, tool_name, arguments)
@@ -61,6 +76,23 @@ class MCPToolClient:
             raise  # re-raise our typed error as-is
         except Exception as e:
             logger.error(f"MCP tool [{server_name}] {tool_name} raised an unexpected error: {e}")
+            raise MCPToolCallError(server_name, tool_name, e) from e
+
+    @staticmethod
+    def _dispatch_remote(base_url: str, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatches an MCP tool call to an external MCP HTTP server."""
+        url = f"{base_url.rstrip('/')}/call_tool"
+        payload = {"tool": tool_name, "arguments": arguments}
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, str):
+                    return json.loads(data)
+                return data
+        except Exception as e:
+            logger.error(f"Remote MCP HTTP call to [{server_name}] at {url} failed: {e}")
             raise MCPToolCallError(server_name, tool_name, e) from e
 
     @staticmethod
